@@ -1,0 +1,587 @@
+---
+title: "Combined"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+I have chosen ten equities from the S&P 500 based on their performance in last year’s equity market and stocks will representative historical data.
+Using one year data(Test), I ran a Genetic Algorithm to find the weights that would optimise the Sharpe Ratio.
+
+**Construction of a portfolio using the GA package**
+```{r Library Setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyquant) # To download the data
+library(plotly) # To create interactive charts
+library(timetk) # To manipulate the data series
+library(tidyr)
+library(GA)
+library(latexpdf)
+library(tinytex)
+library(quantmod)
+```
+```{r Test data 10 Stocks, message=FALSE, include=FALSE, results='hide'}
+#Downloading data and converting it into a table where the function can be passed through a GA
+tick <- c("TSLA", "AMZN", "AAPL", "MSFT", "DIS", "NKE", "MCD", "NVDA", "FB", "NFLX")
+
+price_data <- tq_get(tick,
+                     from = '2021-01-01',
+                     to = '2022-01-01',
+                     get = 'stock.prices')
+#next we calculate daily returns for the stocks chosen. The method I have chosen is Logarithm returns
+log_ret_tidy <- price_data %>%
+  group_by(symbol) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'ret',
+               type = 'log')
+#we need to change the format of the table we have created so it can be processed
+log_ret_xts <- log_ret_tidy %>%
+  spread(symbol, value = ret) %>%
+  tk_xts()
+head(log_ret_xts) # this is our table of logarithm returns
+ 
+#now the table is formated correctly, i can calucate daily returns for each asset
+mean_ret <- colMeans(log_ret_xts)
+print(round(mean_ret, 10))
+
+cov_mat <- cov(log_ret_xts) * 252 #calculating covarance matrix for all the stocks.
+
+print(round(cov_mat,4))
+
+```
+```{r, message=FALSE, results='hide'}
+#now we add the function of the portfolio as we create a function that mutiplys the weights of the asset by the returns
+portfolio_returns = function(x) {
+  port.returns = 0
+  
+  # Multiplication of the i-th asset by the i-th weight in "x"
+  for (i in 1:length(x)) {
+    port.returns = port.returns + log_ret_xts[,i] * x[i]
+  }
+  
+  return (port.returns)
+}
+#we use the sharpe ratio to determine optimal weights, so we have to compute the formula into the function objective function with penalty
+
+sharpe = function(x) {
+  port.returns = portfolio_returns(x)
+  
+  return (mean(port.returns)/sqrt(var(port.returns)))
+  
+}
+#we must ensure that the weights do not exceed when totaled 1
+#so we must add a constraint, we call this a penalty function
+constraint = function(x) {
+ boundary_constr = (sum(x)-1)**2   # "sum x = 1" constraint
+ 
+ for (i in 1:length(x)) {
+  boundary_constr = boundary_constr + 
+     max(c(0,x[i]-1))**2 +  # "x <= 1" constraint
+     max(c(0,-x[i]))**2     # "x >= 0" constraint
+ }
+ return (boundary_constr)
+}
+#we make our objective function into a format where to can be optimized by the GA
+obj = function(x) {
+  # We want the maximum Sharpe ratio, so we multiply it by
+  # -1 to fit an optimization problem
+  return (-sharpe(x)+100*constraint(x))
+}
+```
+```{r, warning=FALSE, results='hide'}
+ga_res = ga(
+  type="real-valued", 
+      # "ga" function performs maximization, so we must
+      # multiply the objective function by -1
+  function(x) {-obj(x)}, 
+      # x_i >= 0
+  lower = rep(0,ncol(log_ret_xts)), 
+      # x_i <= 1
+  upper = rep(1,ncol(log_ret_xts)), 
+  maxiter = 50000, 
+  run=50)
+summary(ga_res)
+print(summary(ga_res)$solution)
+```
+
+Inside the GA, when trying to find out, we must used type "real-valued" as we are looking for a spefic number and not a 1 or 0(binary). The Fitness Funtion puropose is to maximise sharpe ratio therefore formula for Sharpe ratio is computated. lower and higher are used to evaluate te weights as they must be below 1 and above 0. Max iterations is set to 5000 just incase the model takes a long time to evaluate the fitness function.
+
+```{r, message=FALSE, results='hide', include=FALSE}
+#lets store the weights in a vector
+sol1 = as.vector(summary(ga_res)$solution)
+cbind(names(log_ret_xts),sol1)
+
+#lets find portfolio returns based on these weights 
+#Next we will calculate the annualized portfolio returns.
+port_returns1 <- (sum(sol1 * mean_ret) + 1)^252 - 1
+
+#Next we will calculate the portfolio risk (Standard deviation). This will be annualized Standard deviation for the portfolio. 
+#We will use linear algebra to calculate our portfolio risk.
+port_risk1 <- sqrt(t(sol1) %*% (cov_mat %*% sol1))
+
+#sharpe ratio integration
+# Since Risk free rate is 0% 
+sharpe_ratio1 <- port_returns1/port_risk1
+
+```
+```{r}
+print(sol1)
+print(port_returns1)
+print(port_risk1)
+print(sharpe_ratio1)
+```
+It was found that the portfolio would have a return of 35%, a risk of 18% and a Sharpe ratio of 1.88 and the GA produced a fitness function of 0.092. 
+For the case of adding more analysis, I will not be printing Sol, Port returns, Port Risk and Sharpe Ratio below, but each section will have the metrics in the analysis
+
+**Evaluation of of the Portfolio on unseen "Future" data**
+```{r, message=FALSE, results='hide', include=TRUE}
+#I chose data from 2015 to 2022 which is eight years historical data compared with 1 year which we found above. I will calculate portfolio returns using the weights we found from our 1 year data
+price_data2 <- tq_get(tick,
+                      from = '2015-01-01',
+                      to = '2021-01-01',
+                      get = 'stock.prices')
+
+log_ret_tidy2 <- price_data2 %>%
+  group_by(symbol) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'ret',
+               type = 'log')
+
+log_ret_xts2 <- log_ret_tidy2 %>%
+  spread(symbol, value = ret) %>%
+  tk_xts()
+mean_ret2 <- colMeans(log_ret_xts2)
+cov_mat2 <- cov(log_ret_xts2) * 252 #calculating covarance matrix for all the stocks
+port_returns2 <- (sum(sol1 * mean_ret2) + 1)^252 - 1
+port_risk2 <- sqrt(t(sol1) %*% (cov_mat2 %*% sol1))
+sharpe_ratio2 <- port_returns2/port_risk2
+```
+```{r, message=FALSE, results='FALSE', include=FALSE }
+print(sol1)
+print(port_returns2)
+print(port_risk2)
+print(sharpe_ratio2)
+```
+Using the weights found by the Genetic Algorithm on Test data, I can find the returns of the portfolio if it was trialled across my train dataset. It was found that the portfolio would have a return of 33%, a risk of 23% and a Sharpe ratio of 1.4391. The Train and Test portfolio returned slightly different results with the Risk being lower in the Train dataset. on the other hand, the Sharpe Ratio and returns were higher in the test dataset. Given the fact that it is spread over a larger time period, I would expect risk to be lower in the Train dataset. Also, given the year equities had last year the high return figure of 33% over one year is to be expected.
+
+
+**Comparison of evolved portfolio with evenly weighted and random portfolios**
+```{r, message=FALSE, include=TRUE}
+#Evenly weighted Portfolio 
+#i will use the term 'train' to describe the 8 year dataset and the one year dataset will be called 'Test'
+#Test dataset
+weights <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+
+port_returns3 <- (sum(weights * mean_ret) + 1)^252 - 1 #on test dataset
+port_risk3 <- sqrt(t(weights) %*% (cov_mat %*% weights)) #on test dataset
+sharpe_ratio3 <- port_returns3/port_risk3
+
+#Train dataset
+port_returns4 <- (sum(weights * mean_ret2) + 1)^252 - 1 #on train dataset
+port_risk4 <- sqrt(t(weights) %*% (cov_mat2 %*% weights)) #on train dataset
+sharpe_ratio4 <- port_returns4/port_risk4
+```
+```{r, message=FALSE, results='hide'}
+#Random Portfolio
+#Train and (test) data 
+#random weight portfolio
+wts <- runif(n = length(tick))
+wts <- wts/sum(wts) #We created some random weights, but the problem is that their sum is more than 1
+
+port_returns <- (sum(wts * mean_ret2) + 1)^252 - 1
+port_risk <- sqrt(t(wts) %*% (cov_mat2 %*% wts))
+sharpe_ratio <- port_returns/port_risk
+```
+```{r, include=FALSE}
+#need to run this for 5000 different random portfolios (need to create empty vectors to store)
+num_port <- 5000
+# Creating a matrix to store the weights
+all_wts <- matrix(nrow = num_port,
+                  ncol = length(tick))
+# Creating an empty vector to store
+# Portfolio returns
+port_returns <- vector('numeric', length = num_port)
+# Creating an empty vector to store
+# Portfolio Standard deviation
+port_risk <- vector('numeric', length = num_port)
+# Creating an empty vector to store
+# Portfolio Sharpe Ratio
+sharpe_ratio <- vector('numeric', length = num_port)
+#run the loop
+for (i in seq_along(port_returns)) {
+  wts <- runif(length(tick))
+  wts <- wts/sum(wts)
+  # Storing weight in the matrix
+  all_wts[i,] <- wts
+  # Portfolio returns
+  port_ret <- sum(wts * mean_ret2)
+  port_ret <- ((port_ret + 1)^252) - 1
+  # Storing Portfolio Returns values
+  port_returns[i] <- port_ret
+  # Creating and storing portfolio risk
+  port_sd <- sqrt(t(wts) %*% (cov_mat2  %*% wts))
+  port_risk[i] <- port_sd
+  # Creating and storing Portfolio Sharpe Ratios
+  sr <- port_ret/port_sd
+  sharpe_ratio[i] <- sr
+  
+}
+#now we can store the values in the table
+# Storing the values in the table
+portfolio_values <- tibble(Return = port_returns,
+                           Risk = port_risk,
+                           SharpeRatio = sharpe_ratio)
+
+
+# Converting matrix to a tibble and changing column names
+all_wts <- tk_tbl(all_wts)
+
+colnames(all_wts) <- colnames(log_ret_xts)
+
+# Combing all the values together
+portfolio_values <- tk_tbl(cbind(all_wts, portfolio_values))
+#I picked portfolio with highest Sharpe Ratio
+```
+The randomly generated portfolio performed the best in terms of the Sharpe Ratio and returns with the top 2 returns and Sharpe Ratio. With the Test data producing returns of 93% and a sharpe ratio of 2.38, and the Train data producing returns of 42% and a Sharpe ratio of 1.71.
+The Evenly weighted portfolio saw the most favourable risk with the Train and test dataset for evenly Weighted method having the lowest risk with 23% and 29% respectively. 
+Comparing this with earlier portfolios, the Test GA portfolio had a more favourable risk with it being 1% lower than the train Evenly weighted even though that is comparing portfolios using different time periods. Since I look to the train data as a more accurate representation of how a portfolio would return over a given time, the Random portfolio boasted the best Sharpe ratio and return of all the portfolios tested so far
+
+**Creation and evaluation of portfolios with differently balanced risk and return**
+```{r, message=FALSE}
+#High Return 
+#train data 
+portfolio_returns = function(x) {
+  port.returns = 0
+  
+  for (i in 1:length(x)) {
+    port.returns = port.returns + log_ret_xts2[,i] * x[i]
+  }
+  
+  return (port.returns)
+}
+highreturn = function(x) {
+  port.returns = portfolio_returns(x)
+  
+  return (max(port.returns))
+  
+}
+```
+```{r, include=FALSE}
+constraint = function(x) {
+  boundary_constr = (sum(x)-1)**2   # "sum x = 1" constraint
+  for (i in 1:length(x)) {
+    boundary_constr = boundary_constr + 
+      max(c(0,x[i]-1))**2 +  # "x <= 1" constraint
+      max(c(0,-x[i]))**2     # "x >= 0" constraint
+  }
+  return (boundary_constr)
+}
+```
+```{r}
+obj = function(x) {
+
+  return (-highreturn(x)+100*constraint(x))
+}
+```
+```{r,include=FALSE}
+ga_reshr = ga(
+  type="real-valued", 
+  function(x){-obj(x)}, 
+  lower = rep(0,ncol(log_ret_xts2)), 
+  upper = rep(1,ncol(log_ret_xts2)),
+  maxiter = 50000, 
+  run=50,
+  seed=1
+)
+```
+```{r}
+sol2 = as.vector(summary(ga_reshr)$solution)
+port_returns5 <- (sum(sol2 * mean_ret2) + 1)^252 - 1
+port_risk5 <- sqrt(t(sol2) %*% (cov_mat2 %*% sol2))
+sharpe_ratio5 <- port_returns5/port_risk5
+print(sol2)
+```
+```{r,include=FALSE}
+print(port_returns5)
+print(port_risk5)
+print(sharpe_ratio5)
+```
+```{r, message=FALSE, warning=FALSE}
+#Test Period
+
+port_returns6 <- (sum(sol2 * mean_ret) + 1)^252 - 1
+port_risk6 <- sqrt(t(sol2) %*% (cov_mat %*% sol2))
+sharpe_ratio6 <- port_returns5/port_risk5
+sum(sol2)
+```
+The Fitness function was changed to represent a fitness function that can maximise High returns, so I changed the computation of the Sharpe Ratio to max(port.returns) and therefore changing the subject name to High Returns
+
+```{r, include=FALSE}
+print(port_returns6)
+print(port_risk6)
+print(sharpe_ratio6)
+```
+*Mean covariance portfolio*
+
+The reason why I choose to do a mean covariance portfolio was, in the dataset, there are a wide range of companies from different industries. so, focusing the portfolio around covariances which were in the middle of our data set would allow for a fair amount of risk to be diversified across a wide range of industry yet provide good returns.
+```{r, message=FALSE, results='hide'}
+#train data 
+portfolio_returns = function(x) {
+  port.returns = 0
+  for (i in 1:length(x)) {
+    port.returns = port.returns + log_ret_xts2[,i] * x[i]
+  }
+  return (port.returns)
+}
+
+meanco = function(x) {
+  port.returns = portfolio_returns(x)
+  return (mean(cov_mat2))
+}
+```
+```{r, include=FALSE}
+constraint = function(x) {
+  boundary_constr = (sum(x)-1)**2   # "sum x = 1" constraint
+  for (i in 1:length(x)) {
+    boundary_constr = boundary_constr + 
+      max(c(0,x[i]-1))**2 +  # "x <= 1" constraint
+      max(c(0,-x[i]))**2     # "x >= 0" constraint
+  }
+  return (boundary_constr)
+}
+```
+```{r}
+obj = function(x) {
+  
+  return (-meanco(x)+100*constraint(x))
+}
+```
+```{r, include=FALSE}
+ga_resmc = ga(
+  type="real-valued", 
+  function(x){-obj(x)}, 
+  lower = rep(0,ncol(log_ret_xts2)), 
+  upper = rep(1,ncol(log_ret_xts2)), 
+  maxiter = 50000, 
+  run=50, 
+  seed=1
+)
+summary(ga_resmc)
+plot(ga_resmc)
+```
+```{r}
+sol3 = as.vector(summary(ga_resmc)$solution)
+port_returns7 <- (sum(sol3 * mean_ret2) + 1)^252 - 1
+port_risk7 <- sqrt(t(sol3) %*% (cov_mat2 %*% sol3))
+sharpe_ratio7 <- port_returns7/port_risk7
+print(sol3)
+```
+```{r, include=FALSE}
+print(port_returns7)
+print(port_risk7)
+print(sharpe_ratio7)
+```
+```{r, message=FALSE}
+#test
+port_returns8 <- (sum(sol3 * mean_ret) + 1)^252 - 1
+port_risk8 <- sqrt(t(sol3) %*% (cov_mat %*% sol3))
+sharpe_ratio8 <- port_returns8/port_risk8
+sum(sol3)
+```
+To find a fitness function suitable I changed the computation from the formula for Sharpe Ratio to mean covariance and therefore changed the subject name to meanco.
+```{r, include=FALSE}
+print(port_returns8)
+print(port_risk8)
+print(sharpe_ratio8)
+```
+The Fitness function found in the First GA portfolio was 0.092. I based the two GA’s of High Return and Mean Covariance on Train data unlike the first portfolio which was based on train data. Given the fact that the first portfolio was based on test data it seems unfair to compare fitness function but I can compare for the two fitness functions found in this part. As a general rule,  a lower fitness function is better, so the Mean Covariance GA (0.052) performed better in terms of fitness function than the High Return GA (0.118).
+I will use train data to compare over time which method is better. The High return GA had the lowest risk recorded of our two GA’s in this section with 22% but the Mean Covariance method had both the highest return and Sharpe Ratio of 37% and 1.55 respectively.
+In our test dataset, the high return boosted the highest return with 39% and Mean Covariance with the lower risk and a higher Sharpe ratio with 19% and 1.55. An important note to add is with the volatility in the test given the market conditions of post coronavirus, a risk of 19% is quite low and relative the 3rd lowest (meaning 3rd most favourable risk) out of a total of 12 different portfolios.
+
+**Using GA to select assets**
+```{r, message=FALSE,  results=FALSE, include=FALSE}
+tick <- c("TSLA", "AMZN", "AAPL", "MSFT", "DIS", "NKE", "MCD", "NVDA", "FB", "NFLX", "GOOGL",
+          "GOOG", "BRK.B", "JNJ", "UNH", "JPM", "V", "HD", "PG", "MA", "XOM", "BAC", "PFE", "CVX", 
+          "ADBE", "AVGO", "ABBV", "PEP", "TMO", "KO", "CSCO", "COST", "ABT", "CMCSA", "ACN", "WFC", "VZ",
+          "CRM", "QCOM", "MRK", "INTC", "WMT", "LLY", "DHR", "T", "TXN", "UPS", "LOW", "LIN", "UNP")
+
+price_dataspa <- tq_get(tick,
+                        from = '2015-01-01',
+                        to = '2021-01-01',
+                        get = 'stock.prices')
+
+log_ret_tidyspa <- price_dataspa %>%
+  group_by(symbol) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'ret',
+               type = 'log')
+log_ret_xtsspa <- log_ret_tidyspa %>%
+  spread(symbol, value = ret) %>%
+  tk_xts()
+head(log_ret_xtsspa)
+
+mean_retspa <- colMeans(log_ret_xtsspa)
+print(round(mean_retspa, 49))
+
+cov_matspa <- cov(log_ret_xtsspa) * 252 #calculating covarance matrix for all the stocks.
+```
+```{r, messages=FALSE, warning=FALSE}
+dataset<- data.frame(item= c("TSLA", "AMZN", "AAPL", "MSFT", "DIS", "NKE", "MCD", "NVDA", "FB", "NFLX", "GOOGL",
+                             "GOOG", "JNJ", "UNH", "JPM", "V", "HD", "PG", "MA", "XOM", "BAC", "PFE", "CVX", 
+                             "ADBE", "AVGO", "ABBV", "PEP", "TMO", "KO", "CSCO", "COST", "ABT", "CMCSA", "ACN", "WFC", "VZ",
+                             "CRM", "QCOM", "MRK", "INTC", "WMT", "LLY", "DHR", "T", "TXN", "UPS", "LOW", "LIN", "UNP"),
+                     returns= c(0.00278, 0.001022970, 0.001449617, 0.001403793, 0.0003510751, 0.0009959105, 0.0005285949,
+                                0.001770230, 0.0006124380, 0.001088626, 0.0009851542, 0.0009915905, 0.0003097416, 0.0008734557,
+                                0.0004930648, 0.0006579318, 0.0008778912, 0.0006963380, 0.0008751546, -0.0001042877,0.0004798151, 
+                                0.0006798474, 0.00009950336, 0.001151159, 0.001062051, 0.0005089772, 0.0005016075, 0.001240657, 
+                                0.0003892695, 0.0006046789, 0.001156326, 0.0009310859, 0.0002783298, 0.001041578, -0.0001194954, 
+                                0.0001440474, 0.0008824608, 0.001140830, 0.0004769108, 0.0001927438, 0.0004558184, 0.001254325,
+                                0.001277690, -0.0001909050, 0.0006796533, 0.0006652148, 0.001098131, 0.0008609376, 0.0006956707),
+                     weight=c(0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02,0.02,
+                              0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02,
+                              0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02))
+
+weightlimit<- 1
+
+evalFunc <- function(x) {
+  current_solution_returns <- x*(dataset$returns)
+  current_solution_weight <- x*(dataset$weight)
+  
+  if (current_solution_weight > weightlimit) 
+    return(0) else return(current_solution_returns)
+}
+```
+Now that the function has been created, I can pass it through a GA with the binary type to select the asset.
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# Also need to alter the nBits parameter
+knapsackGA <- ga("binary", fitness = evalFunc, nBits = 17, popSize = 100, maxiter =100)
+#changed nbits because there are 17 stocks
+summary(knapsackGA)
+sol4 = as.vector(summary(knapsackGA)$solution)
+```
+```{r, include=FALSE}
+#Train data
+#Chosen assets on train data portfolio performnace 
+
+tickkga<- c("ABT", "ACN", "AVGO", "CMCSA", "COST", "GOOG", "GOOGL", "JNJ", "LIN", "LLY", "NKE", "NVDA", "T", "TSLA", "UPS", "V", "VZ")
+
+
+price_datakga <- tq_get(tickkga,
+                        from = '2015-01-01',
+                        to = '2021-01-01',
+                        get = 'stock.prices')
+
+log_ret_tidykga <- price_datakga %>%
+  group_by(symbol) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'ret',
+               type = 'log')
+log_ret_xtskga <- log_ret_tidykga %>%
+  spread(symbol, value = ret) %>%
+  tk_xts()
+
+mean_retkga <- colMeans(log_ret_xtskga)
+
+
+cov_matkga <- cov(log_ret_xtskga) * 252 #calculating covarance matrix for all the stocks.
+
+portfolio_returns = function(x) {
+  port.returns = 0
+  
+  for (i in 1:length(x)) {
+    port.returns = port.returns + log_ret_xtskga[,i] * x[i]
+  }
+  
+  return (port.returns)
+}
+
+maxreturn = function(x) {
+  port.returns = portfolio_returns(x)
+  
+  return (max(port.returns))
+  
+}
+```
+```{r, include=FALSE}
+constraint = function(x) {
+  boundary_constr = (sum(x)-1)**2   # "sum x = 1" constraint
+  
+  for (i in 1:length(x)) {
+    boundary_constr = boundary_constr + 
+      max(c(0,x[i]-1))**2 +  # "x <= 1" constraint
+      max(c(0,-x[i]))**2     # "x >= 0" constraint
+  }
+
+  return (boundary_constr)
+}
+```
+```{r, warning=FALSE, message=FALSE}
+obj = function(x) {
+  return (-maxreturn(x)+100*constraint(x))
+}
+ga_reskga = ga(
+  type="real-valued", 
+  function(x){-obj(x)}, 
+  lower = rep(0,ncol(log_ret_xtskga)), 
+  upper = rep(1,ncol(log_ret_xtskga)), 
+  maxiter = 50000, 
+  run=100,
+  seed=1
+)
+sol4 = as.vector(summary(ga_reskga)$solution)
+cbind(names(log_ret_xtskga),sol4)
+port_returns9 <- (sum(sol4 * mean_retkga) + 1)^252 - 1
+port_risk9 <- sqrt(t(sol4) %*% (cov_matkga %*% sol4))
+sharpe_ratio9 <- port_returns9/port_risk9
+sum(sol4)
+```
+```{r, include=FALSE}
+print(port_returns9)
+print(port_risk9)
+print(sharpe_ratio9)
+```
+```{r, message=FALSE, include=FALSE}
+#test data
+price_datakga2 <- tq_get(tickkga,
+                        from = '2020-01-01',
+                        to = '2021-01-01',
+                        get = 'stock.prices')
+
+log_ret_tidykga2 <- price_datakga2 %>%
+  group_by(symbol) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = periodReturn,
+               period = 'daily',
+               col_rename = 'ret',
+               type = 'log')
+log_ret_xtskga2 <- log_ret_tidykga2 %>%
+  spread(symbol, value = ret) %>%
+  tk_xts()
+
+mean_retkga2 <- colMeans(log_ret_xtskga2) # calucating mean returns
+cov_matkga2 <- cov(log_ret_xtskga2) * 252 #calculating covarance matrix for all the stocks.
+
+port_returns10 <- (sum(sol4 * mean_retkga2) + 1)^252 - 1
+port_risk10 <- sqrt(t(sol4) %*% (cov_matkga2 %*% sol4))
+sharpe_ratio10 <- port_returns10/port_risk10
+sum(sol4)
+```
+```{r, include=FALSE}
+print(port_returns10)
+print(port_risk10)
+print(sharpe_ratio10)
+```
+The pool of assets that I will be processing through the knapsack problem are the top 50 weighted S&P 500. I extracted the data from each of these stocks over a train period and ran it through a type binary Genetic Algorithm to find the selected assets. 
+After creating 100 generations, it left us with 17 Stocks, which I then ran through a real-valued typed genetic algorithm to find weights and then tested the performance on one year test data.
+The Fitness function from the GA to find weights of our newly selected weights was 0.086. This is approximately halfway between our High return GA(0.1187) and Mean Covariance GA(0.052), and much closer to our initial GA of our own selected stocks on test data(0.092). Given that a smaller Fitness value is more desirable, we can conclude that the model of Mean Covariance was the best fitted model for our dataset with GA-Selected GA in second and our High Return GA last with the highest fitness value
+
+
